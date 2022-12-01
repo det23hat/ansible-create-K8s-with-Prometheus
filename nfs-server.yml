@@ -1,0 +1,90 @@
+---
+- name: config nfs server
+  hosts: tag_Name_NFS
+  vars:
+    - ansible_ssh_common_args: >
+        -o ProxyCommand="ssh -A -i {{ private_key_path }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ubuntu@{{ bastion_ip }}" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null
+  become: true
+  tasks:
+    - name: Download and install NFS server
+      apt:
+        name:
+          - nfs-common
+          - nfs-kernel-server
+        state: present
+        update_cache: yes
+
+    - name: Create a kubedata directory
+      ansible.builtin.file:
+        path: /srv/nfs/kubedata
+        mode: '0777'
+        state: directory
+
+    - name: Create a kubedata directory
+      ansible.builtin.file:
+        path: /srv/nfs/kubedata/es-data
+        state: directory
+
+    - name: Ensure required entries are made to hosts file. 
+      lineinfile:
+        path: /etc/exports
+        state: present
+        line: "{{ item }}"
+      with_items:
+        - '/srv/nfs/kubedata    *(rw,sync,no_subtree_check,no_root_squash)'
+      notify: reload nfsd
+    
+    - name: Ensure nfs is running.
+      service: "name=nfs-kernel-server state=started enabled=yes"
+
+  handlers:
+    - name: reload nfsd
+      command: 'exportfs -ra'
+
+- name: config k8s master node
+  hosts: tag_Name_Master
+  become: true
+  tasks:
+  
+  - name: Add an helm Apt signing key
+    ansible.builtin.apt_key:
+      url: https://baltocdn.com/helm/signing.asc
+      state: present
+
+  - name: Install apt-transport-https
+    apt:
+      name: apt-transport-https
+      state: present
+      update_cache: yes
+  
+  - name: config helm list
+    ansible.builtin.shell: echo "deb https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+
+  - name: Install helm
+    apt:
+      name: helm
+      state: present
+      update_cache: yes
+  
+  - name: Install PyYAML
+    pip:
+      name: PyYAML
+
+  - name: change file ownership
+    ansible.builtin.file:
+      path: /home/ubuntu/.kube/config
+      mode: '0700'
+
+  - name: Add nfs-subdir-external-provisioner repo
+    kubernetes.core.helm_repository:
+      name: nfs-subdir-external-provisioner
+      repo_url: "https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/"
+  
+  - name: install NFS Subdir External Provisioner 
+    ansible.builtin.command: helm install nfs-subdir-external-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
+      --set nfs.server="{{ nfs_server_ip }}" --set nfs.path=/srv/nfs/kubedata
+    environment:
+      KUBECONFIG: /home/ubuntu/.kube/config
+

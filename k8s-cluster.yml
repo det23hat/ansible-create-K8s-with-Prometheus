@@ -1,0 +1,238 @@
+---
+- name: config k8s master node
+  hosts: tag_Name_Master
+  become: true
+  roles:
+    - role: docker_install
+      become: yes
+      vars:
+        requried_packages:
+          - python3-pip
+          - python3-setuptools
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg-agent
+          - software-properties-common
+        docker_engines:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+  tasks:
+    - name: Install packages for nfs client
+      apt:
+        name: nfs-common
+        state: present
+        update_cache: yes
+
+    - name: pip install openshift
+      pip:
+        name: openshift
+
+    - name: Remove swapfile from /etc/fstab
+      mount:
+        name: "{{ item }}"
+        fstype: swap
+        state: absent
+      with_items:
+        - swap
+        - none
+
+    - name: Disable swap
+      command: swapoff -a
+
+    - name: Add an apt signing key for Kubernetes
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+
+    - name: Adding apt repository for Kubernetes
+      apt_repository:
+        repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+        filename: kubernetes.list
+
+    - name: Install Kubernetes binaries
+      apt: 
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+          - kubelet 
+          - kubeadm 
+          - kubectl
+
+    - name: Restart kubelet
+      ansible.builtin.systemd:
+        name: kubelet.service
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+      register: kubelet_state
+    
+    - name: print state
+      ansible.builtin.debug:
+        msg: "{{ kubelet_state }}"      
+    
+    - name: Get stats of a file
+      ansible.builtin.stat:
+        path: ./join-command
+      register: join_command_state
+
+    - name: handle to restart kubelet
+      block:
+        - name: Initialize the Kubernetes cluster using kubeadm
+          command: kubeadm init --apiserver-advertise-address="{{master_node_private_ip}}" \
+                  --apiserver-cert-extra-sans="{{master_node_private_ip}}" --pod-network-cidr=10.244.0.0/16 --v=5
+          when: join_command_state.stat.exists == False
+      rescue:
+        - name: stop kubelet
+          ansible.builtin.systemd:
+            name: kubelet.service
+            state: stopped
+
+        - name: restart kubeadm
+          command: kubeadm reset -f
+        
+        - name: Restart kubelet
+          ansible.builtin.systemd:
+            name: kubelet.service
+            state: restarted
+            enabled: yes
+            daemon_reload: yes
+          register: kubelet_state_2
+    
+        - name: print state
+          ansible.builtin.debug:
+            msg: "{{ kubelet_state_2 }}" 
+
+        - name: restart docker
+          ansible.builtin.service:
+            name: docker
+            state: restarted
+            enabled: yes
+
+        - name: initial again new cluster
+          command: kubeadm init --apiserver-advertise-address="{{master_node_private_ip}}" \
+                  --apiserver-cert-extra-sans="{{master_node_private_ip}}" --pod-network-cidr=10.244.0.0/16 --v=5
+
+    - name: create .kube directory
+      ansible.builtin.file:
+        path: /home/ubuntu/.kube
+        state: directory
+        mode: 0755
+
+    - name: copy admin.conf to user's kube config
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        remote_src: yes
+        owner: ubuntu
+
+    - name: Install flannel pod network
+      become: false
+      command: kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+    - name: Generate join command
+      command: kubeadm token create --print-join-command
+      register: join_command
+
+    - name: print join command info
+      ansible.builtin.debug:
+        msg: "{{ join_command.stdout_lines[0] }}"
+
+    - name: Copy join command
+      ansible.builtin.copy:
+        content: "{{ join_command.stdout_lines[0] }}"
+        dest: "./join-command"
+        remote_src: yes
+
+    - name: Copy join command to local file
+      ansible.builtin.fetch:
+        src: "join-command"
+        dest: "{{ local_join_command_dest }}"
+      register: local_join_path
+
+    - name: print file path
+      ansible.builtin.debug:
+        msg: "{{ local_join_path }}"
+    
+    - name: set fact 
+      set_fact: 
+        join_path: "{{ local_join_path.dest }}"
+
+
+- name: config k8s worker node
+  hosts: tag_Name_Worker
+  vars:
+    - ansible_ssh_common_args: >
+        -o ProxyCommand="ssh -A -i {{ private_key_path }} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ubuntu@{{ bastion_ip }}" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null
+  become: true
+  roles:
+    - role: docker_install
+      vars:
+        requried_packages:
+          - python3-pip
+          - python3-setuptools
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg-agent
+          - software-properties-common
+        docker_engines:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+  tasks:
+    - name: Install packages for nfs client
+      apt:
+        name: nfs-common
+        state: present
+        update_cache: yes
+
+    - name: Remove swapfile from /etc/fstab
+      mount:
+        name: "{{ item }}"
+        fstype: swap
+        state: absent
+      with_items:
+        - swap
+        - none
+    - name: Disable swap
+      command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+    - name: Add an apt signing key for Kubernetes
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+    - name: Adding apt repository for Kubernetes
+      apt_repository:
+        repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+        filename: kubernetes.list
+    - name: Install Kubernetes binaries
+      apt: 
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+          - kubelet 
+          - kubeadm
+    - name: Restart kubelet
+      service:
+        name: kubelet
+        daemon_reload: yes
+        state: restarted
+
+    - name: Copy the join command to server location
+      ansible.builtin.copy:
+        src: "{{ hostvars[master_node_ipv4_dns]['join_path'] }}"
+        dest: /tmp/join-command.sh 
+        mode: 0777
+
+    - name: Join the node to cluster
+      command: sh /tmp/join-command.sh

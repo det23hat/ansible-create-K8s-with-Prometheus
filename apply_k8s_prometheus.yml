@@ -1,0 +1,34 @@
+---
+- name: config k8s master node
+  hosts: tag_Name_Master
+  become: true
+  tasks:
+  - name: copy kube-prometheus file to master node
+    ansible.builtin.copy:
+      src: ./kube-prometheus/manifests
+      dest: ./
+    register: config_file_path
+  
+  - name: print kube-prometheus file path
+    ansible.builtin.debug:
+      msg: "{{ config_file_path }}"
+
+  - name: copy kube-prometheus file to master node
+    ansible.builtin.copy:
+      src: ./kube-prometheus/setup
+      dest: ./manifests/
+    register: config_file_path_setup
+  
+  - name: print kube-prometheus file path
+    ansible.builtin.debug:
+      msg: "{{ config_file_path_setup }}"
+
+  - name: Create a Deployment by reading the definition from a local file
+    command: kubectl create -f ./manifests/setup
+    environment:
+      KUBECONFIG: /home/ubuntu/.kube/config
+
+  - name: Create a Deployment by reading the definition from a local file
+    command: kubectl create -f ./manifests/
+    environment:
+      KUBECONFIG: /home/ubuntu/.kube/config

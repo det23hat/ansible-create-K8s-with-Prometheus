@@ -1,0 +1,43 @@
+---
+  - name: Install docker required packages
+    apt:
+      name: "{{ item }}"
+      state: latest
+      update_cache: true
+    loop: "{{ requried_packages }}" 
+  - name: Add docker's official GPG key
+    apt_key:
+      url: https://download.docker.com/linux/ubuntu/gpg
+      state: present
+  - name: Add docker repository
+    apt_repository:
+      repo: deb https://download.docker.com/linux/ubuntu bionic stable
+      state: present
+  - name: Update apt cache and install docker engine
+    apt:
+      name: "{{ item }}"
+      state: latest
+      update_cache: true
+    loop: "{{ docker_engines }}"
+  - name: Verify docker installed
+    become: true
+    command: docker run --rm hello-world
+  - name: pip install docker
+    pip:
+      name: docker  
+  - name: create daemon.json
+    ansible.builtin.file:
+      path: /etc/docker/daemon.json
+      state: touch
+  - name: insert to daemon.json
+    blockinfile:
+      path: /etc/docker/daemon.json
+      marker: ""
+      block: |
+        {
+          "exec-opts": ["native.cgroupdriver=systemd"]
+        }
+  - name: Restart service docker
+    ansible.builtin.systemd:
+      state: restarted
+      name: docker
